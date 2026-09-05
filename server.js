@@ -138,7 +138,6 @@ function serveFrontend() {
     console.log(`⚡ Backend API: http://localhost:${BACKEND_PORT}/api/health`);
     console.log(`🗄️  Database:    Hostinger MySQL (srv537.hstgr.io)`);
     console.log('----------------------------------------------------');
-    console.log('Admin Credentials -> Email: admin@marooff.ae | Password: marooff@123\n');
     console.log('Press Ctrl + C to stop all servers.\n');
 
     // Automatically open browser
