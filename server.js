@@ -10,14 +10,35 @@ const API_DIR = path.join(ROOT_DIR, 'api');
 
 // Find PHP executable
 function findPhp() {
-  const customPhp = path.join(process.env.USERPROFILE || 'C:\\Users\\rajes', 'php', 'php.exe');
-  if (fs.existsSync(customPhp)) return customPhp;
-  try {
-    execSync('where php', { stdio: 'ignore' });
-    return 'php';
-  } catch {
-    return 'php';
+  if (process.platform === 'win32') {
+    const customPhp = path.join(process.env.USERPROFILE || 'C:\\Users\\rajes', 'php', 'php.exe');
+    if (fs.existsSync(customPhp)) return customPhp;
+    try {
+      execSync('where php', { stdio: 'ignore' });
+      return 'php';
+    } catch {
+      return 'php';
+    }
   }
+  // Linux / Unix candidates
+  const candidates = [
+    'php',
+    '/usr/bin/php',
+    '/usr/local/bin/php',
+    '/opt/alt/php82/usr/bin/php',
+    '/opt/alt/php81/usr/bin/php',
+    '/usr/bin/php8.2',
+    '/usr/bin/php8.1',
+    '/usr/bin/php8.0',
+    '/usr/bin/php82'
+  ];
+  for (const bin of candidates) {
+    try {
+      execSync(`${bin} -v`, { stdio: 'ignore' });
+      return bin;
+    } catch {}
+  }
+  return 'php';
 }
 
 const PHP_BIN = findPhp();
@@ -29,17 +50,52 @@ console.log('[Database] Connected to Hostinger MySQL (srv537.hstgr.io)');
 
 // 1. Start PHP Backend API
 let phpProcess = null;
-function startBackend() {
-  console.log(`[Backend API] Starting CodeIgniter API on http://localhost:${BACKEND_PORT}...`);
-  phpProcess = spawn(PHP_BIN, ['spark', 'serve', '--port', String(BACKEND_PORT)], {
-    cwd: API_DIR,
-    stdio: 'inherit',
-    shell: true
-  });
+const backendLogs = [];
 
-  phpProcess.on('error', (err) => {
-    console.error('[Backend API] Failed to start PHP server:', err.message);
-  });
+function logBackend(msg) {
+  const line = `[${new Date().toISOString()}] ${msg}`;
+  console.log(line);
+  backendLogs.push(line);
+  if (backendLogs.length > 50) backendLogs.shift();
+}
+
+function startBackend() {
+  if (phpProcess && !phpProcess.killed) return;
+  const phpBin = findPhp();
+  logBackend(`Starting CodeIgniter API using "${phpBin}" on http://127.0.0.1:${BACKEND_PORT}...`);
+  try {
+    const isWin = process.platform === 'win32';
+    phpProcess = spawn(phpBin, ['spark', 'serve', '--host', '127.0.0.1', '--port', String(BACKEND_PORT)], {
+      cwd: API_DIR,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: isWin
+    });
+
+    if (phpProcess.stdout) {
+      phpProcess.stdout.on('data', (d) => {
+        const s = d.toString().trim();
+        if (s) logBackend(`[STDOUT] ${s}`);
+      });
+    }
+
+    if (phpProcess.stderr) {
+      phpProcess.stderr.on('data', (d) => {
+        const s = d.toString().trim();
+        if (s) logBackend(`[STDERR] ${s}`);
+      });
+    }
+
+    phpProcess.on('error', (err) => {
+      logBackend(`[ERROR] Failed to start PHP server: ${err.message}`);
+    });
+
+    phpProcess.on('exit', (code, signal) => {
+      logBackend(`[EXIT] PHP server exited with code ${code}, signal ${signal}`);
+      phpProcess = null;
+    });
+  } catch (err) {
+    logBackend(`[EXCEPTION] ${err.message}`);
+  }
 }
 
 // 2. Static Frontend HTTP Server
@@ -75,7 +131,40 @@ function serveFrontend() {
       filePath = path.join(API_DIR, 'public', safePath);
     } else if (reqUrl.startsWith('/api/uploads/')) {
       filePath = path.join(API_DIR, 'public', safePath.replace(/^[\\\/]api[\\\/]/, '/'));
+    } else if (reqUrl === '/api/diagnostic' || reqUrl === '/api/diagnostic/') {
+      let phpVersion = 'unknown';
+      try {
+        phpVersion = execSync(`${findPhp()} -v`, { timeout: 3000 }).toString().trim();
+      } catch (e) {
+        phpVersion = 'Error: ' + e.message;
+      }
+      let sparkStatus = 'unknown';
+      try {
+        sparkStatus = execSync(`${findPhp()} spark -V`, { cwd: API_DIR, timeout: 3000 }).toString().trim();
+      } catch (e) {
+        sparkStatus = 'Error: ' + e.message;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        status: phpProcess ? 'running' : 'offline',
+        nodeVersion: process.version,
+        platform: process.platform,
+        pid: process.pid,
+        cwd: ROOT_DIR,
+        apiDirExists: fs.existsSync(API_DIR),
+        sparkExists: fs.existsSync(path.join(API_DIR, 'spark')),
+        detectedPhp: findPhp(),
+        phpVersion,
+        sparkStatus,
+        backendPort: BACKEND_PORT,
+        frontendPort: FRONTEND_PORT,
+        backendLogs
+      }, null, 2));
+      return;
     } else if (req.url.startsWith('/api/') || req.url === '/api') {
+      if (!phpProcess) {
+        startBackend();
+      }
       // Proxy /api requests to local CodeIgniter backend
       const proxyReq = http.request({
         hostname: '127.0.0.1',
@@ -88,9 +177,16 @@ function serveFrontend() {
         proxyRes.pipe(res, { end: true });
       });
 
-      proxyReq.on('error', () => {
+      proxyReq.on('error', (err) => {
         res.writeHead(502, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: false, error: { message: 'Backend API offline' } }));
+        res.end(JSON.stringify({
+          success: false,
+          error: {
+            message: 'Backend API offline',
+            detail: err.message,
+            backendLogs: backendLogs.slice(-10)
+          }
+        }));
       });
 
       req.pipe(proxyReq, { end: true });
