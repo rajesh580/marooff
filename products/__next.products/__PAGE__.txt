@@ -1,0 +1,6 @@
+1:"$Sreact.fragment"
+2:"$Sreact.suspense"
+3:I[39673,["/_next/static/chunks/0-uvagkdr3me8.js","/_next/static/chunks/0d6gs~dl9vxtr.js","/_next/static/chunks/10_zuojci_8wa.js","/_next/static/chunks/0d3shmwh5_nmn.js","/_next/static/chunks/0fky2.b_0i_03.js"],"default"]
+4:I[97367,["/_next/static/chunks/0-uvagkdr3me8.js","/_next/static/chunks/0d6gs~dl9vxtr.js","/_next/static/chunks/10_zuojci_8wa.js","/_next/static/chunks/0d3shmwh5_nmn.js"],"OutletBoundary"]
+0:{"rsc":["$","$1","c",{"children":[["$","$2",null,{"fallback":["$","div",null,{"className":"container-x py-20 text-center text-[color:var(--color-ink-500)]","children":"Loading…"}],"children":["$","$L3",null,{}]}],[["$","script","script-0",{"src":"/_next/static/chunks/0fky2.b_0i_03.js","async":true}]],["$","$L4",null,{"children":["$","$2",null,{"name":"Next.MetadataOutlet","children":"$@5"}]}]]}],"isPartial":false,"staleTime":300,"varyParams":null,"buildId":"S8Vk0BARDY6VXOrJJNe1S"}
+5:null

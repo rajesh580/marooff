@@ -1,0 +1,25 @@
+# Environment & Secret Files (Keep secrets safe!)
+.env
+.env.*
+!*.example
+*.env
+*.backup
+hostinger_env/
+
+# Backup & Archive Files (avoids 100MB GitHub limit)
+*.zip
+
+# CodeIgniter Writable / Logs / Cache
+api/writable/cache/*
+!api/writable/cache/index.html
+api/writable/logs/*
+!api/writable/logs/index.html
+api/writable/session/*
+!api/writable/session/index.html
+api/writable/debugbar/*
+!api/writable/debugbar/index.html
+
+# OS Files
+Thumbs.db
+Desktop.ini
+.DS_Store

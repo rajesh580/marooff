@@ -1,0 +1,33 @@
+# ============================================================
+#   SPA fallback for the Maroof sales panel
+#   Place at public_html/sales/
+# ============================================================
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  CGIPassAuth On
+
+  # Pass Authorization header
+  RewriteCond %{HTTP:Authorization} .
+  RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+  # If the request is for an actual file or directory, serve it as-is.
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # Keep real 404s on missing static assets so broken references stay visible.
+  RewriteRule \.(js|mjs|css|map|png|jpe?g|svg|ico|gif|webp|woff2?|ttf|eot|json|txt|xml)$ - [L]
+
+  # Everything else → fallback to SPA index.html
+  RewriteRule ^ index.html [L]
+</IfModule>
+
+# Long cache for fingerprinted assets, short cache for the HTML shell.
+<IfModule mod_headers.c>
+  <FilesMatch "\.(js|mjs|css|woff2?|ttf|eot|svg|png|jpe?g|webp|ico)$">
+    Header set Cache-Control "public, max-age=604800, immutable"
+  </FilesMatch>
+  <FilesMatch "\.html$">
+    Header set Cache-Control "no-store, must-revalidate"
+  </FilesMatch>
+</IfModule>
