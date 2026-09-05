@@ -194,6 +194,23 @@ class Database extends Config
     {
         parent::__construct();
 
+        // Support Hostinger UPPERCASE environment variables
+        if ($host = env('DATABASE_DEFAULT_HOSTNAME', env('database.default.hostname'))) {
+            $this->default['hostname'] = $host;
+        }
+        if ($db = env('DATABASE_DEFAULT_DATABASE', env('database.default.database'))) {
+            $this->default['database'] = $db;
+        }
+        if ($user = env('DATABASE_DEFAULT_USERNAME', env('database.default.username'))) {
+            $this->default['username'] = $user;
+        }
+        if ($pass = env('DATABASE_DEFAULT_PASSWORD', env('database.default.password'))) {
+            $this->default['password'] = $pass;
+        }
+        if ($port = env('DATABASE_DEFAULT_PORT', env('database.default.port'))) {
+            $this->default['port'] = (int) $port;
+        }
+
         // Ensure that we always set the database group to 'tests' if
         // we are currently running an automated test suite, so that
         // we don't overwrite live data on accident.
