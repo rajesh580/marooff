@@ -17,6 +17,9 @@ ErrorDocument 404 /404.html
   RewriteCond %{HTTP:Authorization} .
   RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 
+  # Rewrite root /uploads/ to CodeIgniter public uploads folder
+  RewriteRule ^uploads/(.*)$ api/public/uploads/$1 [L]
+
   # Skip if the requested file or directory exists on disk
   RewriteCond %{REQUEST_FILENAME} -f [OR]
   RewriteCond %{REQUEST_FILENAME} -d

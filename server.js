@@ -65,10 +65,37 @@ const MIME_TYPES = {
 
 function serveFrontend() {
   const server = http.createServer((req, res) => {
+    // Proxy /api requests to local CodeIgniter backend
+    if (req.url.startsWith('/api/') || req.url === '/api') {
+      const proxyReq = http.request({
+        hostname: '127.0.0.1',
+        port: BACKEND_PORT,
+        path: req.url,
+        method: req.method,
+        headers: { ...req.headers, host: `127.0.0.1:${BACKEND_PORT}` }
+      }, (proxyRes) => {
+        res.writeHead(proxyRes.statusCode, proxyRes.headers);
+        proxyRes.pipe(res, { end: true });
+      });
+
+      proxyReq.on('error', () => {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: { message: 'Backend API offline' } }));
+      });
+
+      req.pipe(proxyReq, { end: true });
+      return;
+    }
+
     const parsedUrl = req.url.split('?')[0];
     let reqUrl = decodeURI(parsedUrl);
     let safePath = path.normalize(reqUrl).replace(/^(\.\.[\/\\])+/, '');
     let filePath = path.join(ROOT_DIR, safePath);
+
+    // Serve uploads directly from api/public/uploads if requested at root
+    if (reqUrl.startsWith('/uploads/')) {
+      filePath = path.join(API_DIR, 'public', safePath);
+    }
 
     // If directory and missing trailing slash, redirect with slash
     if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory() && !reqUrl.endsWith('/')) {
