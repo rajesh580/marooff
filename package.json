@@ -1,0 +1,14 @@
+{
+  "name": "marooff-store",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Maroof Storefront, Admin Panel, Sales Panel and CodeIgniter 4 API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "echo \"Production assets pre-built\""
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
