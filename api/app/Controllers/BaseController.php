@@ -20,8 +20,35 @@ abstract class BaseController extends Controller
     // ---------- Marooff API response helpers ----------
     // Shape: { "success": true|false, "data": <obj|null>, "meta": <obj|null>, "error": { "code", "message", "fields"? } | null }
 
+    private function normalizeUrls(mixed $data): mixed
+    {
+        if (is_string($data)) {
+            if (str_contains($data, 'http://localhost:8080/uploads/')) {
+                return str_replace('http://localhost:8080/uploads/', '/api/uploads/', $data);
+            }
+            if (str_contains($data, 'https://api.marooffc.com/uploads/')) {
+                return str_replace('https://api.marooffc.com/uploads/', '/api/uploads/', $data);
+            }
+            return $data;
+        }
+        if (is_array($data)) {
+            foreach ($data as $key => $value) {
+                $data[$key] = $this->normalizeUrls($value);
+            }
+            return $data;
+        }
+        if (is_object($data)) {
+            foreach ($data as $key => $value) {
+                $data->{$key} = $this->normalizeUrls($value);
+            }
+            return $data;
+        }
+        return $data;
+    }
+
     protected function ok($data = null, ?array $meta = null, int $status = 200): ResponseInterface
     {
+        $data = $this->normalizeUrls($data);
         $body = ['success' => true, 'data' => $data, 'error' => null];
         if ($meta !== null) $body['meta'] = $meta;
         return $this->response->setStatusCode($status)->setJSON($body);
