@@ -147,12 +147,38 @@ function serveFrontend() {
       } catch (e) {
         phpVersion = 'Error: ' + e.message;
       }
+
       let sparkStatus = 'unknown';
       try {
         sparkStatus = execSync(`${findPhp()} spark -V`, { cwd: API_DIR, timeout: 3000 }).toString().trim();
       } catch (e) {
-        sparkStatus = 'Error: ' + e.message;
+        sparkStatus = 'Error: ' + ((e.stderr && e.stderr.toString()) || (e.stdout && e.stdout.toString()) || e.message);
       }
+
+      let dbTest = 'unknown';
+      try {
+        dbTest = execSync(`${findPhp()} -r "require 'vendor/autoload.php'; define('APPPATH', __DIR__ . '/app/'); define('SYSTEMPATH', __DIR__ . '/vendor/codeigniter4/framework/system/'); define('ENVIRONMENT', 'production'); require 'vendor/codeigniter4/framework/system/Common.php'; require 'app/Common.php'; (new \CodeIgniter\Config\DotEnv(__DIR__))->load(); try { \\$db = \\Config\\Database::connect(); \\$row = \\$db->query('SELECT 1')->getRow(); echo \\$row ? 'DB_CONNECTED_SUCCESS' : 'DB_NO_ROW'; } catch (\\Throwable \\$e) { echo 'DB_EXCEPTION: ' . \\$e->getMessage(); }"`, {
+          cwd: API_DIR,
+          timeout: 5000
+        }).toString().trim();
+      } catch (e) {
+        dbTest = 'Error: ' + ((e.stderr && e.stderr.toString()) || (e.stdout && e.stdout.toString()) || e.message);
+      }
+
+      let ciLogs = [];
+      try {
+        const logsDir = path.join(API_DIR, 'writable', 'logs');
+        if (fs.existsSync(logsDir)) {
+          const files = fs.readdirSync(logsDir).filter(f => f.endsWith('.log')).sort().reverse();
+          if (files.length > 0) {
+            const content = fs.readFileSync(path.join(logsDir, files[0]), 'utf8');
+            ciLogs = content.split('\n').filter(Boolean).slice(-30);
+          }
+        }
+      } catch (logErr) {
+        ciLogs = ['Log error: ' + logErr.message];
+      }
+
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         status: phpProcess ? 'running' : 'offline',
@@ -165,6 +191,8 @@ function serveFrontend() {
         detectedPhp: findPhp(),
         phpVersion,
         sparkStatus,
+        dbTest,
+        ciLogs,
         backendPort: BACKEND_PORT,
         frontendPort: FRONTEND_PORT,
         backendLogs
