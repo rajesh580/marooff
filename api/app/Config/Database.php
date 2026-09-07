@@ -26,7 +26,7 @@ class Database extends Config
      */
     public array $default = [
         'DSN'          => '',
-        'hostname'     => 'localhost',
+        'hostname'     => 'srv537.hstgr.io',
         'username'     => 'u823898062_admin',
         'password'     => 'T4*t1Y&fke',
         'database'     => 'u823898062_marooff',
@@ -40,7 +40,24 @@ class Database extends Config
         'encrypt'      => false,
         'compress'     => false,
         'strictOn'     => false,
-        'failover'     => [],
+        'failover'     => [
+            [
+                'hostname' => 'localhost',
+                'username' => 'u823898062_admin',
+                'password' => 'T4*t1Y&fke',
+                'database' => 'u823898062_marooff',
+                'DBDriver' => 'MySQLi',
+                'port'     => 3306,
+            ],
+            [
+                'hostname' => '127.0.0.1',
+                'username' => 'u823898062_admin',
+                'password' => 'T4*t1Y&fke',
+                'database' => 'u823898062_marooff',
+                'DBDriver' => 'MySQLi',
+                'port'     => 3306,
+            ],
+        ],
         'port'         => 3306,
         'numberNative' => false,
         'foundRows'    => false,
@@ -198,6 +215,16 @@ class Database extends Config
         // Support Hostinger UPPERCASE environment variables
         if ($host = env('DATABASE_DEFAULT_HOSTNAME', env('database.default.hostname'))) {
             $this->default['hostname'] = $host;
+            if ($host !== 'srv537.hstgr.io') {
+                $this->default['failover'][] = [
+                    'hostname' => 'srv537.hstgr.io',
+                    'username' => $this->default['username'],
+                    'password' => $this->default['password'],
+                    'database' => $this->default['database'],
+                    'DBDriver' => 'MySQLi',
+                    'port'     => 3306,
+                ];
+            }
         }
         if ($db = env('DATABASE_DEFAULT_DATABASE', env('database.default.database'))) {
             $this->default['database'] = $db;
