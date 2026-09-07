@@ -491,24 +491,8 @@ function serveFrontend() {
         }
       }
 
-      // Buffer body for non-GET requests so retries remain safe and payload is preserved
-      let requestBodyBuffer = null;
-      let bodyReadPromise = null;
-      if (req.method !== 'GET' && req.method !== 'HEAD') {
-        bodyReadPromise = new Promise((resolve) => {
-          const bodyChunks = [];
-          req.on('data', c => bodyChunks.push(c));
-          req.on('end', () => {
-            requestBodyBuffer = Buffer.concat(bodyChunks);
-            resolve(requestBodyBuffer);
-          });
-          req.on('error', () => resolve(Buffer.alloc(0)));
-        });
-      }
-
       // 3. Robust Proxy Execution with Keep-Alive Agent & Auto-Retry
       async function executeProxy(retryCount = 0) {
-        if (bodyReadPromise) await bodyReadPromise;
         if (clientClosed && !canCache) return;
 
         let inFlightResolver = null;
@@ -579,7 +563,7 @@ function serveFrontend() {
             if (inFlightRejecter) inFlightRejecter(err);
             inFlightRequests.delete(cacheKey);
 
-            if (retryCount < 2 && (err.code === 'ECONNREFUSED' || err.code === 'ECONNRESET' || err.code === 'EPIPE')) {
+            if (retryCount < 2 && (req.method === 'GET' || req.method === 'HEAD') && (err.code === 'ECONNREFUSED' || err.code === 'ECONNRESET' || err.code === 'EPIPE')) {
               logBackend(`[PROXY RETRY] ${req.url} failed with ${err.code}. Retrying (${retryCount + 1}/2)...`);
               await new Promise(r => setTimeout(r, 300 * (retryCount + 1)));
               return executeProxy(retryCount + 1);
@@ -601,8 +585,6 @@ function serveFrontend() {
 
           if (req.method === 'GET' || req.method === 'HEAD') {
             proxyReq.end();
-          } else if (requestBodyBuffer) {
-            proxyReq.end(requestBodyBuffer);
           } else {
             req.pipe(proxyReq, { end: true });
           }
