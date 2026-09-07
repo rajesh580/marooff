@@ -105,7 +105,7 @@ class Cors extends BaseConfig
     {
         parent::__construct();
 
-        $extra = (string) env('cors.allowed_origins', '');
+        $extra = (string) env('CORS_ALLOWED_ORIGINS', env('cors.allowed_origins', ''));
         if ($extra !== '') {
             foreach (explode(',', $extra) as $origin) {
                 $origin = trim($origin);
