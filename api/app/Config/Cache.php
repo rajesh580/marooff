@@ -195,4 +195,25 @@ class Cache extends BaseConfig
      * @var list<int>
      */
     public array $cacheStatusCodes = [];
+
+    public function __construct()
+    {
+        parent::__construct();
+
+        $path = $this->file['storePath'] ?? (WRITEPATH . 'cache/');
+        if (!is_dir($path)) {
+            @mkdir($path, 0777, true);
+        }
+        if (!is_writable($path)) {
+            $tmp = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'marooff_cache';
+            if (!is_dir($tmp)) {
+                @mkdir($tmp, 0777, true);
+            }
+            if (is_writable($tmp)) {
+                $this->file['storePath'] = rtrim($tmp, '\\/') . DIRECTORY_SEPARATOR;
+            } else {
+                $this->handler = 'dummy';
+            }
+        }
+    }
 }

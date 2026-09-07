@@ -61,6 +61,23 @@ function logBackend(msg) {
 
 function startBackend() {
   if (phpProcess && !phpProcess.killed) return;
+
+  // Ensure writable directories exist with full permissions
+  const writableDirs = [
+    path.join(API_DIR, 'writable'),
+    path.join(API_DIR, 'writable', 'cache'),
+    path.join(API_DIR, 'writable', 'logs'),
+    path.join(API_DIR, 'writable', 'session'),
+    path.join(API_DIR, 'writable', 'uploads'),
+    path.join(API_DIR, 'public', 'uploads')
+  ];
+  for (const dir of writableDirs) {
+    try {
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.chmodSync(dir, 0o777);
+    } catch {}
+  }
+
   const phpBin = findPhp();
   logBackend(`Starting CodeIgniter API using "${phpBin}" on http://127.0.0.1:${BACKEND_PORT}...`);
   try {
