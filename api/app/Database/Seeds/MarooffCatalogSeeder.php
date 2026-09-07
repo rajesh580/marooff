@@ -16,7 +16,7 @@ use CodeIgniter\Database\Seeder;
  */
 class MarooffCatalogSeeder extends Seeder
 {
-    private const PRODUCTS_JSON = 'D:\\marooff\\maroof-backend-api\\marooff-backend-api\\marooff-products.json';
+    private const PRODUCTS_JSON = 'marooff-products.json';
 
     /** Top-level categories shown in the storefront navigation. */
     private const CATEGORIES = [
@@ -44,7 +44,9 @@ class MarooffCatalogSeeder extends Seeder
 
     public function run()
     {
-        $jsonPath = is_file(ROOTPATH . 'marooff-products.json') ? (ROOTPATH . 'marooff-products.json') : self::PRODUCTS_JSON;
+        $jsonPath = is_file(ROOTPATH . 'marooff-products.json')
+            ? (ROOTPATH . 'marooff-products.json')
+            : (is_file(APPPATH . '../marooff-products.json') ? APPPATH . '../marooff-products.json' : ROOTPATH . self::PRODUCTS_JSON);
         if (!is_file($jsonPath)) {
             echo "Missing input: " . $jsonPath . "\n";
             return;
@@ -187,7 +189,7 @@ class MarooffCatalogSeeder extends Seeder
             'placement'  => 'home_hero',
             'title'      => 'Premium cosmetics, made for everyday glam',
             'subtitle'   => 'Discover Maroof — authentic UAE-made beauty.',
-            'image_url'  => 'http://localhost:8080/uploads/banners/marooff-hero-1.jpg',
+            'image_url'  => '/api/uploads/banners/marooff-hero-1.jpg',
             'link_url'   => '/products',
             'sort_order' => 1, 'is_active' => 1,
             'created_at' => $now, 'updated_at' => $now,
@@ -196,7 +198,7 @@ class MarooffCatalogSeeder extends Seeder
             'placement'  => 'home_hero',
             'title'      => 'The Eyeshadow Edit',
             'subtitle'   => 'Bold pigment, blendable formula, all-day wear.',
-            'image_url'  => 'http://localhost:8080/uploads/banners/marooff-hero-2.jpg',
+            'image_url'  => '/api/uploads/banners/marooff-hero-2.jpg',
             'link_url'   => '/category/eyes',
             'sort_order' => 2, 'is_active' => 1,
             'created_at' => $now, 'updated_at' => $now,
@@ -205,7 +207,7 @@ class MarooffCatalogSeeder extends Seeder
             'placement'  => 'home_hero',
             'title'      => 'Lip Edit — Long-Lasting Glam',
             'subtitle'   => 'From matte to gloss, find your signature shade.',
-            'image_url'  => 'http://localhost:8080/uploads/banners/marooff-hero-3.jpg',
+            'image_url'  => '/api/uploads/banners/marooff-hero-3.jpg',
             'link_url'   => '/category/lips',
             'sort_order' => 3, 'is_active' => 1,
             'created_at' => $now, 'updated_at' => $now,

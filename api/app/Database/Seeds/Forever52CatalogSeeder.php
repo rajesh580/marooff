@@ -279,9 +279,9 @@ class Forever52CatalogSeeder extends Seeder
 
         // ---- Home hero banners (local files copied during earlier session) ----
         foreach ([
-            ['placement' => 'home_hero', 'title' => 'All-Day Grip Primer', 'subtitle' => 'Lock in your look from morning to night', 'image_url' => 'http://localhost:8080/uploads/banners/banner-1.png', 'link_url' => '/category/primer'],
-            ['placement' => 'home_hero', 'title' => 'Amazonic Combo',      'subtitle' => 'Bestselling makeup essentials, bundled.', 'image_url' => 'http://localhost:8080/uploads/banners/banner-2.png', 'link_url' => '/category/face'],
-            ['placement' => 'home_hero', 'title' => 'Maroof Spring Edit',  'subtitle' => "Discover this season's fresh new arrivals.", 'image_url' => 'http://localhost:8080/uploads/banners/banner-3.png', 'link_url' => '/products?sort=new'],
+            ['placement' => 'home_hero', 'title' => 'All-Day Grip Primer', 'subtitle' => 'Lock in your look from morning to night', 'image_url' => '/api/uploads/banners/banner-1.png', 'link_url' => '/category/primer'],
+            ['placement' => 'home_hero', 'title' => 'Amazonic Combo',      'subtitle' => 'Bestselling makeup essentials, bundled.', 'image_url' => '/api/uploads/banners/banner-2.png', 'link_url' => '/category/face'],
+            ['placement' => 'home_hero', 'title' => 'Maroof Spring Edit',  'subtitle' => "Discover this season's fresh new arrivals.", 'image_url' => '/api/uploads/banners/banner-3.png', 'link_url' => '/products?sort=new'],
         ] as $i => $b) {
             $this->db->table('banners')->insert(array_merge($b, [
                 'sort_order' => $i + 1, 'is_active' => 1,
@@ -309,7 +309,7 @@ class Forever52CatalogSeeder extends Seeder
         $ext  = strtolower(pathinfo($src, PATHINFO_EXTENSION)) ?: 'png';
         $dest = $destDir . DIRECTORY_SEPARATOR . $slug . '.' . $ext;
         copy($src, $dest);
-        return 'http://localhost:8080/uploads/categories/' . $slug . '.' . $ext;
+        return '/api/uploads/categories/' . $slug . '.' . $ext;
     }
 
     /**

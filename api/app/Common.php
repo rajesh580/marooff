@@ -27,6 +27,12 @@ if (! function_exists('env')) {
             $value = getenv($upperKey);
         }
 
+        // Also handle camelCase to UPPER_SNAKE_CASE (e.g. baseURL -> APP_BASEURL)
+        if ($value === false || $value === null) {
+            $snake = strtoupper(preg_replace('/(?<!^)[A-Z]/', '_$0', str_replace('.', '_', $key)));
+            $value = $_ENV[$snake] ?? $_SERVER[$snake] ?? getenv($snake);
+        }
+
         // Not found? Return the default value
         if ($value === false || $value === null) {
             return $default;

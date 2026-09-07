@@ -53,6 +53,13 @@ require FCPATH . '../app/Config/Paths.php';
 
 $paths = new Paths();
 
+// Support loading .env from root directory (public_html/.env) as well as api/.env
+$rootEnvDir = dirname(__DIR__, 2);
+if (is_file($rootEnvDir . DIRECTORY_SEPARATOR . '.env')) {
+    require_once $paths->systemDirectory . '/Config/DotEnv.php';
+    (new \CodeIgniter\Config\DotEnv($rootEnvDir))->load();
+}
+
 // LOAD THE FRAMEWORK BOOTSTRAP FILE
 require $paths->systemDirectory . '/Boot.php';
 

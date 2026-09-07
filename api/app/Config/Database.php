@@ -51,15 +51,6 @@ class Database extends Config
         ],
     ];
 
-    public function __construct()
-    {
-        parent::__construct();
-
-        $this->default['hostname'] = env('database.default.hostname', env('DATABASE_DEFAULT_HOSTNAME', $this->default['hostname']));
-        $this->default['database'] = env('database.default.database', env('DATABASE_DEFAULT_DATABASE', $this->default['database']));
-        $this->default['username'] = env('database.default.username', env('DATABASE_DEFAULT_USERNAME', $this->default['username']));
-        $this->default['password'] = env('database.default.password', env('DATABASE_DEFAULT_PASSWORD', $this->default['password']));
-    }
 
     //    /**
     //     * Sample database connection for SQLite3.
