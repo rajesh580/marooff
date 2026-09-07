@@ -65,7 +65,16 @@ function startBackend() {
   logBackend(`Starting CodeIgniter API using "${phpBin}" on http://127.0.0.1:${BACKEND_PORT}...`);
   try {
     const isWin = process.platform === 'win32';
-    phpProcess = spawn(phpBin, ['spark', 'serve', '--host', '127.0.0.1', '--port', String(BACKEND_PORT)], {
+    const docroot = path.resolve(API_DIR, 'public');
+    const rewriteScript = path.resolve(API_DIR, 'vendor', 'codeigniter4', 'framework', 'system', 'rewrite.php');
+
+    // Prefer direct PHP built-in server with CodeIgniter rewrite.php:
+    // It avoids CLI/passthru issues and works reliably on all environments.
+    const args = fs.existsSync(rewriteScript)
+      ? ['-S', `127.0.0.1:${BACKEND_PORT}`, '-t', docroot, rewriteScript]
+      : ['spark', 'serve', '--host', '127.0.0.1', '--port', String(BACKEND_PORT)];
+
+    phpProcess = spawn(phpBin, args, {
       cwd: API_DIR,
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: isWin
@@ -73,15 +82,15 @@ function startBackend() {
 
     if (phpProcess.stdout) {
       phpProcess.stdout.on('data', (d) => {
-        const s = d.toString().trim();
-        if (s) logBackend(`[STDOUT] ${s}`);
+        const lines = d.toString().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        lines.forEach(line => logBackend(`[STDOUT] ${line}`));
       });
     }
 
     if (phpProcess.stderr) {
       phpProcess.stderr.on('data', (d) => {
-        const s = d.toString().trim();
-        if (s) logBackend(`[STDERR] ${s}`);
+        const lines = d.toString().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        lines.forEach(line => logBackend(`[STDERR] ${line}`));
       });
     }
 

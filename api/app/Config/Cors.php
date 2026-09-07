@@ -40,7 +40,9 @@ class Cors extends BaseConfig
          * E.g.:
          *   - ['https://\w+\.example\.com']
          */
-        'allowedOriginsPatterns' => [],
+        'allowedOriginsPatterns' => [
+            '#^https?://.*\.hostingersite\.com$#',
+        ],
 
         /**
          * Weather to send the `Access-Control-Allow-Credentials` header.
@@ -112,6 +114,12 @@ class Cors extends BaseConfig
                 if ($origin !== '' && !in_array($origin, $this->default['allowedOrigins'], true)) {
                     $this->default['allowedOrigins'][] = $origin;
                 }
+            }
+        }
+
+        if ($origin = ($_SERVER['HTTP_ORIGIN'] ?? null)) {
+            if (!in_array($origin, $this->default['allowedOrigins'], true)) {
+                $this->default['allowedOrigins'][] = $origin;
             }
         }
     }

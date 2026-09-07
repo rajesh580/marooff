@@ -207,5 +207,12 @@ class App extends BaseConfig
         if ($baseURL = env('APP_BASEURL', env('app.baseURL'))) {
             $this->baseURL = $baseURL;
         }
+
+        if ($httpHost = ($_SERVER['HTTP_HOST'] ?? null)) {
+            [$h] = explode(':', $httpHost, 2);
+            if ($h !== '' && !in_array($h, $this->allowedHostnames, true)) {
+                $this->allowedHostnames[] = $h;
+            }
+        }
     }
 }
