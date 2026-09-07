@@ -29,6 +29,18 @@ abstract class BaseController extends Controller
             if (str_contains($data, 'https://api.marooffc.com/uploads/')) {
                 return str_replace('https://api.marooffc.com/uploads/', '/api/uploads/', $data);
             }
+            if (str_contains($data, 'http://localhost:8080/api/')) {
+                return str_replace('http://localhost:8080/api/', '/api/', $data);
+            }
+            if (str_contains($data, 'https://api.marooffc.com/api/')) {
+                return str_replace('https://api.marooffc.com/api/', '/api/', $data);
+            }
+            if (str_contains($data, 'http://localhost:8080/')) {
+                return str_replace('http://localhost:8080/', '/', $data);
+            }
+            if (str_contains($data, 'https://api.marooffc.com/')) {
+                return str_replace('https://api.marooffc.com/', '/', $data);
+            }
             return $data;
         }
         if (is_array($data)) {

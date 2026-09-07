@@ -18,6 +18,10 @@ api/writable/session/*
 !api/writable/session/index.html
 api/writable/debugbar/*
 !api/writable/debugbar/index.html
+api/writable/*.log
+api/writable/*.db
+api/writable/server.log
+api/writable/database.db
 
 # OS Files
 Thumbs.db

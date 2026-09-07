@@ -36,7 +36,7 @@ class Media extends BaseController
         $name   = $file->getRandomName();
         $file->move($dest, $name);
 
-        $base = rtrim((string) env('upload.public_url', 'http://localhost:8080/uploads/'), '/') . '/';
+        $base = rtrim((string) env('upload.public_url', env('UPLOAD_PUBLIC_URL', 'https://marooffc.com/api/uploads/')), '/') . '/';
         $url  = $base . str_replace(DIRECTORY_SEPARATOR, '/', $subdir) . '/' . $name;
 
         return $this->created([

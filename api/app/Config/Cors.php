@@ -23,6 +23,8 @@ class Cors extends BaseConfig
      */
     public array $default = [
         'allowedOrigins' => [
+            'https://marooffc.com', 'https://www.marooffc.com',
+            'https://admin.marooffc.com', 'https://sales.marooffc.com',
             'http://localhost:3000', 'http://127.0.0.1:3000',
             'http://localhost:5173', 'http://127.0.0.1:5173',
         ],

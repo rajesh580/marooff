@@ -8,9 +8,10 @@ $routes->setDefaultNamespace('App\Controllers');
 $routes->setAutoRoute(false);
 
 // Health check / welcome
-$routes->get('/', 'Home::index');
-$routes->get('api/health', 'Api\Health::index');
+$routes->get('/', 'Api\Health::index');
 $routes->get('health', 'Api\Health::index');
+$routes->get('api', 'Api\Health::index');
+$routes->get('api/health', 'Api\Health::index');
 
 // CORS preflight — answer OPTIONS for every /api/* and root path
 $routes->options('api/(:any)', static function () {

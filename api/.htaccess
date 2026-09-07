@@ -2,6 +2,7 @@
   RewriteEngine On
   CGIPassAuth On
   SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
-  RewriteRule ^$ public/ [L]
-  RewriteRule (.*) public/$1 [L]
+  RewriteRule ^uploads/(.*)$ public/uploads/$1 [L]
+  RewriteRule ^$ public/index.php [L]
+  RewriteRule (.*) public/index.php/$1 [L,QSA]
 </IfModule>

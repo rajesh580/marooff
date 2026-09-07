@@ -27,13 +27,13 @@ class Database extends Config
     public array $default = [
         'DSN'          => '',
         'hostname'     => 'localhost',
-        'username'     => '',
-        'password'     => '',
-        'database'     => '',
+        'username'     => 'u823898062_admin',
+        'password'     => 'T4*t1Y&fke',
+        'database'     => 'u823898062_marooff',
         'DBDriver'     => 'MySQLi',
         'DBPrefix'     => '',
         'pConnect'     => false,
-        'DBDebug'      => true,
+        'DBDebug'      => false,
         'charset'      => 'utf8mb4',
         'DBCollat'     => 'utf8mb4_general_ci',
         'swapPre'      => '',
@@ -50,6 +50,16 @@ class Database extends Config
             'time'     => 'H:i:s',
         ],
     ];
+
+    public function __construct()
+    {
+        parent::__construct();
+
+        $this->default['hostname'] = env('database.default.hostname', env('DATABASE_DEFAULT_HOSTNAME', $this->default['hostname']));
+        $this->default['database'] = env('database.default.database', env('DATABASE_DEFAULT_DATABASE', $this->default['database']));
+        $this->default['username'] = env('database.default.username', env('DATABASE_DEFAULT_USERNAME', $this->default['username']));
+        $this->default['password'] = env('database.default.password', env('DATABASE_DEFAULT_PASSWORD', $this->default['password']));
+    }
 
     //    /**
     //     * Sample database connection for SQLite3.
