@@ -49,19 +49,22 @@ console.log('   Maroof Storefront — All-in-One Server Launcher');
 console.log('====================================================\n');
 console.log('[Database] Connected to Hostinger MySQL (srv537.hstgr.io)');
 
-// 1. Start PHP Backend API
+// 1. PHP Process Supervisor State
 let phpProcess = null;
-let isStartingBackend = false;
+let isStarting = false;
+let isShuttingDown = false;
+let backendReadyPromise = null;
 const backendLogs = [];
 
 function logBackend(msg) {
   const line = `[${new Date().toISOString()}] ${msg}`;
   console.log(line);
   backendLogs.push(line);
-  if (backendLogs.length > 50) backendLogs.shift();
+  if (backendLogs.length > 60) backendLogs.shift();
 }
 
 // Kill any orphaned PHP processes left over from prior deployments
+// ONLY called on startup or explicit manual restart
 function killOrphanedPhp() {
   if (process.platform !== 'win32') {
     try {
@@ -87,11 +90,8 @@ function checkPortAvailable(port) {
   });
 }
 
-// Find an available port starting from startPort
+// Find an available port starting from startPort (does NOT kill processes)
 async function findAvailableBackendPort(startPort = 8080) {
-  killOrphanedPhp();
-  await new Promise(r => setTimeout(r, 200));
-
   for (let p = startPort; p < startPort + 20; p++) {
     const isFree = await checkPortAvailable(p);
     if (isFree) return p;
@@ -99,90 +99,162 @@ async function findAvailableBackendPort(startPort = 8080) {
   return startPort;
 }
 
-async function startBackend() {
-  if (phpProcess && !phpProcess.killed) return;
-  if (isStartingBackend) return;
-  isStartingBackend = true;
-
-  try {
-    // Ensure writable directories exist with full permissions
-    const writableDirs = [
-      path.join(API_DIR, 'writable'),
-      path.join(API_DIR, 'writable', 'cache'),
-      path.join(API_DIR, 'writable', 'logs'),
-      path.join(API_DIR, 'writable', 'session'),
-      path.join(API_DIR, 'writable', 'uploads'),
-      path.join(API_DIR, 'public', 'uploads')
-    ];
-    for (const dir of writableDirs) {
-      try {
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        fs.chmodSync(dir, 0o777);
-      } catch {}
-    }
-
-    // Automatically find a free port so we never clash with orphaned processes
-    const freePort = await findAvailableBackendPort(BACKEND_PORT);
-    BACKEND_PORT = freePort;
-
-    const phpBin = findPhp();
-    logBackend(`Starting CodeIgniter API using "${phpBin}" on http://127.0.0.1:${BACKEND_PORT}...`);
-
-    const isWin = process.platform === 'win32';
-    const docroot = path.resolve(API_DIR, 'public');
-    const rewriteScript = path.resolve(API_DIR, 'vendor', 'codeigniter4', 'framework', 'system', 'rewrite.php');
-
-    // Prefer direct PHP built-in server with CodeIgniter rewrite.php:
-    // It avoids CLI/passthru issues and works reliably on all environments.
-    const args = fs.existsSync(rewriteScript)
-      ? ['-S', `127.0.0.1:${BACKEND_PORT}`, '-t', docroot, rewriteScript]
-      : ['spark', 'serve', '--host', '127.0.0.1', '--port', String(BACKEND_PORT)];
-
-    let lastErrorOutput = '';
-
-    phpProcess = spawn(phpBin, args, {
-      cwd: API_DIR,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: isWin
+// Fast internal HTTP ping to check if PHP server is answering
+function pingBackend(port, timeoutMs = 1200) {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${port}/api/health`, { timeout: timeoutMs }, (res) => {
+      res.resume(); // free memory
+      resolve(res.statusCode >= 200 && res.statusCode < 500);
     });
-
-    if (phpProcess.stdout) {
-      phpProcess.stdout.on('data', (d) => {
-        const lines = d.toString().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-        lines.forEach(line => logBackend(`[STDOUT] ${line}`));
-      });
-    }
-
-    if (phpProcess.stderr) {
-      phpProcess.stderr.on('data', (d) => {
-        const text = d.toString();
-        lastErrorOutput += text;
-        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-        lines.forEach(line => logBackend(`[STDERR] ${line}`));
-      });
-    }
-
-    phpProcess.on('error', (err) => {
-      logBackend(`[ERROR] Failed to start PHP server: ${err.message}`);
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(false);
     });
-
-    phpProcess.on('exit', async (code, signal) => {
-      logBackend(`[EXIT] PHP server exited with code ${code}, signal ${signal}`);
-      phpProcess = null;
-
-      // Auto-retry on next port if address already in use
-      if (lastErrorOutput.includes('Address already in use')) {
-        logBackend(`Port ${BACKEND_PORT} already in use. Retrying on next port...`);
-        BACKEND_PORT++;
-        setTimeout(() => startBackend(), 500);
-      }
-    });
-  } catch (err) {
-    logBackend(`[EXCEPTION] ${err.message}`);
-  } finally {
-    isStartingBackend = false;
-  }
+  });
 }
+
+// Spawn the PHP built-in server process
+async function spawnPhpProcess() {
+  if (isShuttingDown) return;
+
+  // Ensure writable directories exist with full permissions
+  const writableDirs = [
+    path.join(API_DIR, 'writable'),
+    path.join(API_DIR, 'writable', 'cache'),
+    path.join(API_DIR, 'writable', 'logs'),
+    path.join(API_DIR, 'writable', 'session'),
+    path.join(API_DIR, 'writable', 'uploads'),
+    path.join(API_DIR, 'public', 'uploads')
+  ];
+  for (const dir of writableDirs) {
+    try {
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.chmodSync(dir, 0o777);
+    } catch {}
+  }
+
+  // Find a free port
+  const freePort = await findAvailableBackendPort(BACKEND_PORT);
+  BACKEND_PORT = freePort;
+
+  const phpBin = findPhp();
+  logBackend(`Starting CodeIgniter API using "${phpBin}" on http://127.0.0.1:${BACKEND_PORT}...`);
+
+  const isWin = process.platform === 'win32';
+  const docroot = path.resolve(API_DIR, 'public');
+  const rewriteScript = path.resolve(API_DIR, 'vendor', 'codeigniter4', 'framework', 'system', 'rewrite.php');
+
+  const args = fs.existsSync(rewriteScript)
+    ? ['-S', `127.0.0.1:${BACKEND_PORT}`, '-t', docroot, rewriteScript]
+    : ['spark', 'serve', '--host', '127.0.0.1', '--port', String(BACKEND_PORT)];
+
+  let lastErrorOutput = '';
+
+  const proc = spawn(phpBin, args, {
+    cwd: API_DIR,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: isWin
+  });
+
+  phpProcess = proc;
+
+  if (proc.stdout) {
+    proc.stdout.on('data', (d) => {
+      const lines = d.toString().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      lines.forEach(line => logBackend(`[STDOUT] ${line}`));
+    });
+  }
+
+  if (proc.stderr) {
+    proc.stderr.on('data', (d) => {
+      const text = d.toString();
+      lastErrorOutput += text;
+      const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      lines.forEach(line => logBackend(`[STDERR] ${line}`));
+    });
+  }
+
+  proc.on('error', (err) => {
+    logBackend(`[ERROR] Failed to start PHP server: ${err.message}`);
+  });
+
+  proc.on('exit', (code, signal) => {
+    logBackend(`[EXIT] PHP server exited with code ${code}, signal ${signal}`);
+    if (phpProcess === proc) {
+      phpProcess = null;
+    }
+
+    if (!isShuttingDown) {
+      if (lastErrorOutput.includes('Address already in use')) {
+        logBackend(`Port ${BACKEND_PORT} busy. Incrementing port...`);
+        BACKEND_PORT++;
+      }
+      logBackend('[SUPERVISOR] PHP died. Auto-restarting in 400ms...');
+      setTimeout(() => {
+        ensureBackendReady().catch((e) => logBackend(`[RESTART ERROR] ${e.message}`));
+      }, 400);
+    }
+  });
+}
+
+// Gate function: Guarantees PHP is running and responding before fulfilling requests
+async function ensureBackendReady(maxWaitMs = 10000) {
+  if (isShuttingDown) throw new Error('Server shutting down');
+
+  // If already running and responsive, return immediately
+  if (phpProcess && !phpProcess.killed) {
+    const alive = await pingBackend(BACKEND_PORT, 800);
+    if (alive) return BACKEND_PORT;
+  }
+
+  // If already in the middle of starting, wait for the pending promise
+  if (backendReadyPromise) {
+    return backendReadyPromise;
+  }
+
+  backendReadyPromise = (async () => {
+    isStarting = true;
+    try {
+      if (!phpProcess || phpProcess.killed) {
+        await spawnPhpProcess();
+      }
+
+      // Poll until PHP responds to HTTP ping
+      const startTime = Date.now();
+      while (Date.now() - startTime < maxWaitMs) {
+        await new Promise(r => setTimeout(r, 200));
+        const ok = await pingBackend(BACKEND_PORT, 600);
+        if (ok) {
+          logBackend(`[SUPERVISOR] Backend confirmed healthy and ready on port ${BACKEND_PORT}`);
+          return BACKEND_PORT;
+        }
+      }
+
+      logBackend(`[WARN] Backend readiness polling reached timeout; proceeding on port ${BACKEND_PORT}`);
+      return BACKEND_PORT;
+    } finally {
+      isStarting = false;
+      backendReadyPromise = null;
+    }
+  })();
+
+  return backendReadyPromise;
+}
+
+// Background Heartbeat: pings backend every 15 seconds to prevent idle sleep / termination
+setInterval(async () => {
+  if (isShuttingDown || isStarting) return;
+  try {
+    const isAlive = await pingBackend(BACKEND_PORT, 2000);
+    if (!isAlive) {
+      logBackend('[HEARTBEAT] PHP backend unresponsive. Triggering revival...');
+      await ensureBackendReady();
+    }
+  } catch (err) {
+    logBackend(`[HEARTBEAT ERROR] ${err.message}`);
+  }
+}, 15000);
 
 // 2. Static Frontend HTTP Server
 const MIME_TYPES = {
@@ -224,14 +296,17 @@ function serveFrontend() {
         phpProcess = null;
       }
       killOrphanedPhp();
-      startBackend().then(() => {
+      ensureBackendReady().then(() => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           success: true,
-          message: 'Backend restarted',
+          message: 'Backend restarted and verified ready',
           backendPort: BACKEND_PORT,
           logs: backendLogs.slice(-20)
         }, null, 2));
+      }).catch((e) => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: e.message }));
       });
       return;
     } else if (reqUrl === '/api/diagnostic' || reqUrl === '/api/diagnostic/') {
@@ -256,87 +331,110 @@ function serveFrontend() {
         ciLogs = ['Log error: ' + logErr.message];
       }
 
-      // Self-test: make an HTTP request to local PHP server
-      const testReq = http.get(`http://127.0.0.1:${BACKEND_PORT}/api/settings/public`, { timeout: 4000 }, (testRes) => {
-        let rawData = '';
-        testRes.on('data', chunk => rawData += chunk);
-        testRes.on('end', () => {
-          let parsedData = null;
-          try { parsedData = JSON.parse(rawData); } catch {}
+      pingBackend(BACKEND_PORT, 2000).then((isHealthy) => {
+        const testReq = http.get(`http://127.0.0.1:${BACKEND_PORT}/api/settings/public`, { timeout: 4000 }, (testRes) => {
+          let rawData = '';
+          testRes.on('data', chunk => rawData += chunk);
+          testRes.on('end', () => {
+            let parsedData = null;
+            try { parsedData = JSON.parse(rawData); } catch {}
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              status: isHealthy ? 'running' : 'offline',
+              nodeVersion: process.version,
+              platform: process.platform,
+              pid: process.pid,
+              backendPort: BACKEND_PORT,
+              frontendPort: FRONTEND_PORT,
+              phpVersion,
+              backendHealthy: isHealthy,
+              selfTest: {
+                statusCode: testRes.statusCode,
+                success: parsedData ? parsedData.success : false,
+                storeName: (parsedData && parsedData.data && parsedData.data.store_name) || null
+              },
+              ciLogs,
+              backendLogs
+            }, null, 2));
+          });
+        });
+
+        testReq.on('error', (e) => {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
-            status: phpProcess ? 'running' : 'offline',
+            status: isHealthy ? 'running' : 'offline',
             nodeVersion: process.version,
             platform: process.platform,
             pid: process.pid,
             backendPort: BACKEND_PORT,
             frontendPort: FRONTEND_PORT,
             phpVersion,
+            backendHealthy: isHealthy,
             selfTest: {
-              statusCode: testRes.statusCode,
-              success: parsedData ? parsedData.success : false,
-              storeName: (parsedData && parsedData.data && parsedData.data.store_name) || null
+              error: e.message
             },
             ciLogs,
             backendLogs
           }, null, 2));
         });
       });
-
-      testReq.on('error', (e) => {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          status: phpProcess ? 'running' : 'offline',
-          nodeVersion: process.version,
-          platform: process.platform,
-          pid: process.pid,
-          backendPort: BACKEND_PORT,
-          frontendPort: FRONTEND_PORT,
-          phpVersion,
-          selfTest: {
-            error: e.message
-          },
-          ciLogs,
-          backendLogs
-        }, null, 2));
-      });
       return;
     } else if (req.url.startsWith('/api/') || req.url === '/api') {
-      if (!phpProcess) {
-        startBackend();
-      }
-      // Proxy /api requests to local CodeIgniter backend
-      const proxyReq = http.request({
-        hostname: '127.0.0.1',
-        port: BACKEND_PORT,
-        path: req.url,
-        method: req.method,
-        headers: {
-          ...req.headers,
-          host: `127.0.0.1:${BACKEND_PORT}`,
-          'x-forwarded-host': req.headers['host'] || 'marooffc.com',
-          'x-forwarded-proto': req.headers['x-forwarded-proto'] || 'https',
-          'x-forwarded-for': req.headers['x-forwarded-for'] || req.socket.remoteAddress
+      // Robust proxy with auto-retry
+      async function handleProxyRequest(retryCount = 0) {
+        try {
+          await ensureBackendReady();
+
+          const proxyReq = http.request({
+            hostname: '127.0.0.1',
+            port: BACKEND_PORT,
+            path: req.url,
+            method: req.method,
+            headers: {
+              ...req.headers,
+              host: `127.0.0.1:${BACKEND_PORT}`,
+              'x-forwarded-host': req.headers['host'] || 'marooffc.com',
+              'x-forwarded-proto': req.headers['x-forwarded-proto'] || 'https',
+              'x-forwarded-for': req.headers['x-forwarded-for'] || req.socket.remoteAddress
+            }
+          }, (proxyRes) => {
+            res.writeHead(proxyRes.statusCode, proxyRes.headers);
+            proxyRes.pipe(res, { end: true });
+          });
+
+          proxyReq.on('error', async (err) => {
+            if (retryCount < 2 && (err.code === 'ECONNREFUSED' || err.code === 'ECONNRESET')) {
+              logBackend(`[PROXY RETRY] ${req.url} failed with ${err.code}. Retrying (${retryCount + 1}/2)...`);
+              await new Promise(r => setTimeout(r, 400));
+              return handleProxyRequest(retryCount + 1);
+            }
+
+            res.writeHead(502, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              success: false,
+              error: {
+                message: 'Backend API offline',
+                detail: err.message,
+                backendPort: BACKEND_PORT,
+                backendLogs: backendLogs.slice(-10)
+              }
+            }));
+          });
+
+          req.pipe(proxyReq, { end: true });
+        } catch (err) {
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            success: false,
+            error: {
+              message: 'Failed to connect to backend',
+              detail: err.message
+            }
+          }));
         }
-      }, (proxyRes) => {
-        res.writeHead(proxyRes.statusCode, proxyRes.headers);
-        proxyRes.pipe(res, { end: true });
-      });
+      }
 
-      proxyReq.on('error', (err) => {
-        res.writeHead(502, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          success: false,
-          error: {
-            message: 'Backend API offline',
-            detail: err.message,
-            backendPort: BACKEND_PORT,
-            backendLogs: backendLogs.slice(-10)
-          }
-        }));
-      });
-
-      req.pipe(proxyReq, { end: true });
+      handleProxyRequest();
       return;
     }
 
@@ -421,6 +519,7 @@ function serveFrontend() {
 
 // Clean exit handlers
 function shutdown() {
+  isShuttingDown = true;
   console.log('\nStopping servers...');
   if (phpProcess) {
     try {
@@ -436,6 +535,7 @@ function shutdown() {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-// Execute start
-startBackend();
+// Initial start
+killOrphanedPhp();
+ensureBackendReady().catch((e) => logBackend(`[STARTUP ERROR] ${e.message}`));
 serveFrontend();
