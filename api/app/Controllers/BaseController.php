@@ -101,8 +101,13 @@ abstract class BaseController extends Controller
     // ---------- Request helpers ----------
     protected function jsonBody(): array
     {
-        $body = $this->request->getJSON(true);
-        return is_array($body) ? $body : ($this->request->getPost() ?: []);
+        try {
+            $body = $this->request->getJSON(true);
+            if (is_array($body)) {
+                return $body;
+            }
+        } catch (\Throwable $e) {}
+        return $this->request->getPost() ?: [];
     }
 
     protected function pageParams(int $defaultLimit = 24, int $maxLimit = 100): array

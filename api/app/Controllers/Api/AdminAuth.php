@@ -11,11 +11,19 @@ class AdminAuth extends BaseController
     public function login()
     {
         $body  = $this->jsonBody();
-        $email = trim((string) ($body['email'] ?? ''));
+        $email = trim(strtolower((string) ($body['email'] ?? '')));
         $pass  = (string) ($body['password'] ?? '');
         if (!$email || !$pass) return $this->validationError(['email' => 'required', 'password' => 'required']);
 
-        $u = (new AdminUserModel())->findByEmail($email);
+        $model = new AdminUserModel();
+        $u = $model->findByEmail($email);
+        if (!$u) {
+            if (str_ends_with($email, '@marooffc.com')) {
+                $u = $model->findByEmail(str_replace('@marooffc.com', '@marooff.ae', $email));
+            } elseif (str_ends_with($email, '@marooff.ae')) {
+                $u = $model->findByEmail(str_replace('@marooff.ae', '@marooffc.com', $email));
+            }
+        }
         if (!$u || !password_verify($pass, $u['password_hash'])) {
             return $this->fail('INVALID_CREDENTIALS', 'Email or password is incorrect', null, 401);
         }
