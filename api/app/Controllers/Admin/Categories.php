@@ -54,6 +54,7 @@ class Categories extends BaseController
             }
             $id = (int) $m->getInsertID();
             ArabicAutoFill::run('categories', $id, CATEGORY_AR_FIELDS, CATEGORY_AR_OVERRIDES);
+            try { cache()->clean(); } catch (\Throwable $e) {}
             return $this->created($m->find($id));
         } catch (\Throwable $e) {
             if (stripos($e->getMessage(), 'duplicate') !== false || stripos($e->getMessage(), '1062') !== false) {
@@ -83,6 +84,7 @@ class Categories extends BaseController
         try {
             if (!$m->update($id, $body)) return $this->validationError($m->errors());
             ArabicAutoFill::run('categories', $id, CATEGORY_AR_FIELDS, CATEGORY_AR_OVERRIDES);
+            try { cache()->clean(); } catch (\Throwable $e) {}
             return $this->ok($m->find($id));
         } catch (\Throwable $e) {
             if (stripos($e->getMessage(), 'duplicate') !== false || stripos($e->getMessage(), '1062') !== false) {
@@ -97,6 +99,7 @@ class Categories extends BaseController
         $m = new CategoryModel();
         if (!$m->find($id)) return $this->notFound('Category not found');
         $m->delete($id);
+        try { cache()->clean(); } catch (\Throwable $e) {}
         return $this->ok(['deleted' => true]);
     }
 

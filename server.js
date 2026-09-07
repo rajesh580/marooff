@@ -56,6 +56,61 @@ let isShuttingDown = false;
 let backendReadyPromise = null;
 const backendLogs = [];
 
+// Persistent HTTP Keep-Alive Agent for PHP backend requests
+const backendAgent = new http.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 64,
+  timeout: 15000
+});
+
+// In-Memory Micro-Cache for Public Read-Only Storefront Endpoints
+const apiCache = new Map(); // key -> { statusCode, headers, body: Buffer, expiresAt: number }
+const inFlightRequests = new Map(); // key -> Promise<{ statusCode, headers, body: Buffer }>
+const API_CACHE_TTL_MS = 60 * 1000; // 60s TTL guarantees instant category navigation
+
+function isCacheableApiRequest(method, url, headers = {}) {
+  if (method !== 'GET' && method !== 'HEAD') return false;
+  if (headers['authorization']) return false;
+  if (headers['x-no-cache'] || headers['cache-control']?.includes('no-cache')) return false;
+
+  const urlPath = (url || '').split('?')[0];
+  const cacheablePrefixes = [
+    '/api/categories',
+    '/api/products',
+    '/api/combos',
+    '/api/home',
+    '/api/settings/public',
+    '/api/banners'
+  ];
+
+  return cacheablePrefixes.some(p => urlPath === p || urlPath.startsWith(p + '/'));
+}
+
+function flushApiCache(reason = '') {
+  const count = apiCache.size;
+  apiCache.clear();
+  inFlightRequests.clear();
+  if (count > 0 && reason) {
+    logBackend(`[CACHE] Flushed ${count} cached API responses (${reason})`);
+  }
+}
+
+// Clean hop-by-hop headers and align content-length when proxying/caching buffered bodies
+function cleanResponseHeaders(headers = {}, bodyLength = null) {
+  const clean = { ...headers };
+  delete clean['transfer-encoding'];
+  delete clean['connection'];
+  delete clean['keep-alive'];
+  delete clean['content-encoding'];
+  if (typeof bodyLength === 'number') {
+    clean['content-length'] = String(bodyLength);
+  } else {
+    delete clean['content-length'];
+  }
+  return clean;
+}
+
 function logBackend(msg) {
   const line = `[${new Date().toISOString()}] ${msg}`;
   console.log(line);
@@ -100,7 +155,7 @@ async function findAvailableBackendPort(startPort = 8080) {
 }
 
 // Fast internal HTTP ping to check if PHP server is answering
-function pingBackend(port, timeoutMs = 1200) {
+function pingBackend(port, timeoutMs = 2500) {
   return new Promise((resolve) => {
     const req = http.get(`http://127.0.0.1:${port}/api/health`, { timeout: timeoutMs }, (res) => {
       res.resume(); // free memory
@@ -154,7 +209,11 @@ async function spawnPhpProcess() {
   const proc = spawn(phpBin, args, {
     cwd: API_DIR,
     stdio: ['ignore', 'pipe', 'pipe'],
-    shell: isWin
+    shell: isWin,
+    env: {
+      ...process.env,
+      PHP_CLI_SERVER_WORKERS: '16'
+    }
   });
 
   phpProcess = proc;
@@ -379,9 +438,89 @@ function serveFrontend() {
         });
       });
       return;
+    } else if (reqUrl === '/api/cache/flush' || reqUrl === '/api/clear-cache') {
+      const count = apiCache.size;
+      flushApiCache('manual endpoint');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, message: `Flushed ${count} cached API entries`, cacheSize: 0 }, null, 2));
+      return;
     } else if (req.url.startsWith('/api/') || req.url === '/api') {
-      // Robust proxy with auto-retry
-      async function handleProxyRequest(retryCount = 0) {
+      // Invalidate storefront micro-cache immediately on any admin or data mutation
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        flushApiCache(`mutation: ${req.method} ${req.url}`);
+      }
+
+      let clientClosed = false;
+      req.on('close', () => {
+        clientClosed = true;
+      });
+
+      const cacheKey = req.url;
+      const canCache = isCacheableApiRequest(req.method, req.url, req.headers);
+
+      // 1. Instant Cache Hit Check (<0.5ms response time)
+      if (canCache) {
+        const cached = apiCache.get(cacheKey);
+        if (cached && Date.now() < cached.expiresAt) {
+          const headers = cleanResponseHeaders(cached.headers, cached.body.length);
+          res.writeHead(cached.statusCode, {
+            ...headers,
+            'x-cache': 'HIT',
+            'cache-control': 'public, max-age=60'
+          });
+          res.end(cached.body);
+          return;
+        }
+
+        // 2. In-Flight Request Deduplication (Promise Coalescing)
+        if (inFlightRequests.has(cacheKey)) {
+          inFlightRequests.get(cacheKey).then((coalesced) => {
+            if (!clientClosed && !res.writableEnded) {
+              const headers = cleanResponseHeaders(coalesced.headers, coalesced.body.length);
+              res.writeHead(coalesced.statusCode, {
+                ...headers,
+                'x-cache': 'HIT-COALESCED',
+                'cache-control': 'public, max-age=60'
+              });
+              res.end(coalesced.body);
+            }
+          }).catch(() => {
+            executeProxy(0);
+          });
+          return;
+        }
+      }
+
+      // Buffer body for non-GET requests so retries remain safe and payload is preserved
+      let requestBodyBuffer = null;
+      let bodyReadPromise = null;
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        bodyReadPromise = new Promise((resolve) => {
+          const bodyChunks = [];
+          req.on('data', c => bodyChunks.push(c));
+          req.on('end', () => {
+            requestBodyBuffer = Buffer.concat(bodyChunks);
+            resolve(requestBodyBuffer);
+          });
+          req.on('error', () => resolve(Buffer.alloc(0)));
+        });
+      }
+
+      // 3. Robust Proxy Execution with Keep-Alive Agent & Auto-Retry
+      async function executeProxy(retryCount = 0) {
+        if (bodyReadPromise) await bodyReadPromise;
+        if (clientClosed && !canCache) return;
+
+        let inFlightResolver = null;
+        let inFlightRejecter = null;
+        if (canCache && retryCount === 0 && !inFlightRequests.has(cacheKey)) {
+          const p = new Promise((resolve, reject) => {
+            inFlightResolver = resolve;
+            inFlightRejecter = reject;
+          });
+          inFlightRequests.set(cacheKey, p);
+        }
+
         try {
           await ensureBackendReady();
 
@@ -390,6 +529,7 @@ function serveFrontend() {
             port: BACKEND_PORT,
             path: req.url,
             method: req.method,
+            agent: backendAgent,
             headers: {
               ...req.headers,
               host: `127.0.0.1:${BACKEND_PORT}`,
@@ -398,43 +538,92 @@ function serveFrontend() {
               'x-forwarded-for': req.headers['x-forwarded-for'] || req.socket.remoteAddress
             }
           }, (proxyRes) => {
-            res.writeHead(proxyRes.statusCode, proxyRes.headers);
-            proxyRes.pipe(res, { end: true });
+            const chunks = [];
+            proxyRes.on('data', c => chunks.push(c));
+            proxyRes.on('end', () => {
+              const body = Buffer.concat(chunks);
+              const result = {
+                statusCode: proxyRes.statusCode,
+                headers: proxyRes.headers,
+                body
+              };
+
+              // Cache 200 OK responses
+              if (canCache && proxyRes.statusCode === 200) {
+                apiCache.set(cacheKey, {
+                  statusCode: proxyRes.statusCode,
+                  headers: {
+                    ...proxyRes.headers,
+                    'cache-control': 'public, max-age=60'
+                  },
+                  body,
+                  expiresAt: Date.now() + API_CACHE_TTL_MS
+                });
+              }
+
+              if (inFlightResolver) inFlightResolver(result);
+              inFlightRequests.delete(cacheKey);
+
+              if (!clientClosed && !res.writableEnded) {
+                const headers = cleanResponseHeaders(proxyRes.headers, body.length);
+                res.writeHead(proxyRes.statusCode, {
+                  ...headers,
+                  'x-cache': canCache ? 'MISS' : 'BYPASS'
+                });
+                res.end(body);
+              }
+            });
           });
 
           proxyReq.on('error', async (err) => {
-            if (retryCount < 2 && (err.code === 'ECONNREFUSED' || err.code === 'ECONNRESET')) {
+            if (inFlightRejecter) inFlightRejecter(err);
+            inFlightRequests.delete(cacheKey);
+
+            if (retryCount < 2 && (err.code === 'ECONNREFUSED' || err.code === 'ECONNRESET' || err.code === 'EPIPE')) {
               logBackend(`[PROXY RETRY] ${req.url} failed with ${err.code}. Retrying (${retryCount + 1}/2)...`);
-              await new Promise(r => setTimeout(r, 400));
-              return handleProxyRequest(retryCount + 1);
+              await new Promise(r => setTimeout(r, 300 * (retryCount + 1)));
+              return executeProxy(retryCount + 1);
             }
 
+            if (!clientClosed && !res.writableEnded) {
+              res.writeHead(502, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({
+                success: false,
+                error: {
+                  message: 'Backend API offline',
+                  detail: err.message,
+                  backendPort: BACKEND_PORT,
+                  backendLogs: backendLogs.slice(-10)
+                }
+              }));
+            }
+          });
+
+          if (req.method === 'GET' || req.method === 'HEAD') {
+            proxyReq.end();
+          } else if (requestBodyBuffer) {
+            proxyReq.end(requestBodyBuffer);
+          } else {
+            req.pipe(proxyReq, { end: true });
+          }
+        } catch (err) {
+          if (inFlightRejecter) inFlightRejecter(err);
+          inFlightRequests.delete(cacheKey);
+
+          if (!clientClosed && !res.writableEnded) {
             res.writeHead(502, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
               success: false,
               error: {
-                message: 'Backend API offline',
-                detail: err.message,
-                backendPort: BACKEND_PORT,
-                backendLogs: backendLogs.slice(-10)
+                message: 'Failed to connect to backend',
+                detail: err.message
               }
             }));
-          });
-
-          req.pipe(proxyReq, { end: true });
-        } catch (err) {
-          res.writeHead(502, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            success: false,
-            error: {
-              message: 'Failed to connect to backend',
-              detail: err.message
-            }
-          }));
+          }
         }
       }
 
-      handleProxyRequest();
+      executeProxy();
       return;
     }
 

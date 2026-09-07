@@ -22,20 +22,39 @@ class Home extends BaseController
 
     public function index()
     {
-        $banners    = (new BannerModel())->activeForPlacement('home_hero');
-        $categories = (new CategoryModel())->activeOrdered();
-        $productM   = new ProductModel();
+        $lang = (string) ($this->request->getGet('lang') ?? 'en');
+        $cacheKey = 'home_aggregate_' . $lang;
+        try {
+            if ($cached = cache($cacheKey)) {
+                return $this->ok($cached);
+            }
+        } catch (\Throwable $e) {}
 
-        $newArrivals = $productM->search(['new' => 1,        'limit' => 12, 'sort' => 'new'])['items'];
-        $featured    = $productM->search(['featured' => 1,   'limit' => 12, 'sort' => 'new'])['items'];
-        $bestsellers = $productM->search(['bestseller' => 1, 'limit' => 12, 'sort' => 'new'])['items'];
+        try {
+            $banners    = (new BannerModel())->activeForPlacement('home_hero');
+            $categories = (new CategoryModel())->activeOrdered();
+            $productM   = new ProductModel();
 
-        return $this->ok([
-            'banners'      => $this->localizeMany($banners, self::BANNER_AR_MAP),
-            'categories'   => $this->localizeMany($categories, self::CATEGORY_AR_MAP),
-            'new_arrivals' => $this->localizeMany($newArrivals, self::PRODUCT_AR_MAP),
-            'featured'     => $this->localizeMany($featured, self::PRODUCT_AR_MAP),
-            'bestsellers'  => $this->localizeMany($bestsellers, self::PRODUCT_AR_MAP),
-        ]);
+            $newArrivals = $productM->search(['new' => 1,        'limit' => 12, 'sort' => 'new'])['items'];
+            $featured    = $productM->search(['featured' => 1,   'limit' => 12, 'sort' => 'new'])['items'];
+            $bestsellers = $productM->search(['bestseller' => 1, 'limit' => 12, 'sort' => 'new'])['items'];
+
+            $res = [
+                'banners'      => $this->localizeMany($banners, self::BANNER_AR_MAP),
+                'categories'   => $this->localizeMany($categories, self::CATEGORY_AR_MAP),
+                'new_arrivals' => $this->localizeMany($newArrivals, self::PRODUCT_AR_MAP),
+                'featured'     => $this->localizeMany($featured, self::PRODUCT_AR_MAP),
+                'bestsellers'  => $this->localizeMany($bestsellers, self::PRODUCT_AR_MAP),
+            ];
+
+            try {
+                cache()->save($cacheKey, $res, 120);
+            } catch (\Throwable $e) {}
+
+            return $this->ok($res);
+        } catch (\Throwable $e) {
+            log_message('error', 'Home::index failed: ' . $e->getMessage());
+            return $this->serverError('Failed to load homepage data: ' . $e->getMessage());
+        }
     }
 }

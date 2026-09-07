@@ -217,6 +217,7 @@ class Products extends BaseController
             if (!$m->insert($body)) return $this->validationError($m->errors());
             $id = (int) $m->getInsertID();
             ArabicAutoFill::run('products', $id, PRODUCT_AR_FIELDS);
+            try { cache()->clean(); } catch (\Throwable $e) {}
             return $this->created($m->find($id));
         } catch (\Throwable $e) {
             if (stripos($e->getMessage(), 'duplicate') !== false || stripos($e->getMessage(), '1062') !== false) {
@@ -240,6 +241,7 @@ class Products extends BaseController
         try {
             if (!$m->update($id, $body)) return $this->validationError($m->errors());
             ArabicAutoFill::run('products', $id, PRODUCT_AR_FIELDS);
+            try { cache()->clean(); } catch (\Throwable $e) {}
             return $this->ok($m->find($id));
         } catch (\Throwable $e) {
             if (stripos($e->getMessage(), 'duplicate') !== false || stripos($e->getMessage(), '1062') !== false) {
@@ -254,6 +256,7 @@ class Products extends BaseController
         $m = new ProductModel();
         if (!$m->find($id)) return $this->notFound('Product not found');
         $m->delete($id);
+        try { cache()->clean(); } catch (\Throwable $e) {}
         return $this->ok(['deleted' => true]);
     }
 

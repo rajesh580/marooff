@@ -22,35 +22,53 @@ class Categories extends BaseController
      */
     public function index()
     {
-        $rows = (new CategoryModel())->activeOrdered();
+        $lang = (string) ($this->request->getGet('lang') ?? 'en');
+        $cacheKey = 'categories_index_' . $lang;
+        try {
+            if ($cached = cache($cacheKey)) {
+                return $this->ok($cached);
+            }
+        } catch (\Throwable $e) {}
 
-        // Count active products per category in a single query.
-        $counts = [];
-        $db = \Config\Database::connect();
-        $q  = $db->query('SELECT category_id, COUNT(*) AS n FROM products WHERE is_active = 1 GROUP BY category_id');
-        foreach ($q->getResultArray() as $r) {
-            $counts[(int) $r['category_id']] = (int) $r['n'];
-        }
+        try {
+            $rows = (new CategoryModel())->activeOrdered();
 
-        $parents = [];
-        $childrenByParent = [];
-        foreach ($rows as $r) {
-            $r['product_count'] = $counts[(int) $r['id']] ?? 0;
-            if ($r['parent_id'] === null) $parents[] = $r;
-            else $childrenByParent[(int) $r['parent_id']][] = $r;
+            // Count active products per category in a single query.
+            $counts = [];
+            $db = \Config\Database::connect();
+            $q  = $db->query('SELECT category_id, COUNT(*) AS n FROM products WHERE is_active = 1 GROUP BY category_id');
+            foreach ($q->getResultArray() as $r) {
+                $counts[(int) $r['category_id']] = (int) $r['n'];
+            }
+
+            $parents = [];
+            $childrenByParent = [];
+            foreach ($rows as $r) {
+                $r['product_count'] = $counts[(int) $r['id']] ?? 0;
+                if ($r['parent_id'] === null) $parents[] = $r;
+                else $childrenByParent[(int) $r['parent_id']][] = $r;
+            }
+            foreach ($parents as &$p) {
+                $kids = $childrenByParent[(int) $p['id']] ?? [];
+                usort($kids, fn ($a, $b) => ((int) $a['sort_order']) <=> ((int) $b['sort_order']));
+                $kids = $this->localizeMany($kids, self::CATEGORY_AR_MAP);
+                $p['children']      = $kids;
+                // Total = parent's own products + all children's products
+                $p['product_total'] =
+                    (int) ($p['product_count'] ?? 0)
+                    + array_sum(array_map(fn ($c) => (int) ($c['product_count'] ?? 0), $kids));
+            }
+            $parents = $this->localizeMany($parents, self::CATEGORY_AR_MAP);
+
+            try {
+                cache()->save($cacheKey, $parents, 120);
+            } catch (\Throwable $e) {}
+
+            return $this->ok($parents);
+        } catch (\Throwable $e) {
+            log_message('error', 'Categories::index failed: ' . $e->getMessage());
+            return $this->serverError('Failed to load categories: ' . $e->getMessage());
         }
-        foreach ($parents as &$p) {
-            $kids = $childrenByParent[(int) $p['id']] ?? [];
-            usort($kids, fn ($a, $b) => ((int) $a['sort_order']) <=> ((int) $b['sort_order']));
-            $kids = $this->localizeMany($kids, self::CATEGORY_AR_MAP);
-            $p['children']      = $kids;
-            // Total = parent's own products + all children's products
-            $p['product_total'] =
-                (int) ($p['product_count'] ?? 0)
-                + array_sum(array_map(fn ($c) => (int) ($c['product_count'] ?? 0), $kids));
-        }
-        $parents = $this->localizeMany($parents, self::CATEGORY_AR_MAP);
-        return $this->ok($parents);
     }
 
     /**
@@ -62,53 +80,78 @@ class Categories extends BaseController
      */
     public function show(string $slug)
     {
-        $catM = new CategoryModel();
-        $cat  = $catM->findBySlug($slug);
-        if (!$cat || !$cat['is_active']) return $this->notFound('Category not found');
-
         [, $limit, $offset] = $this->pageParams(24, 60);
-        $isParent = $cat['parent_id'] === null;
+        $lang = (string) ($this->request->getGet('lang') ?? 'en');
+        $cacheKey = 'cat_show_' . md5($slug . '_' . $limit . '_' . $offset . '_' . $lang);
+        try {
+            if ($cached = cache($cacheKey)) {
+                return $this->ok($cached);
+            }
+        } catch (\Throwable $e) {}
 
-        if ($isParent) {
-            $children = $catM->where('parent_id', $cat['id'])->where('is_active', 1)
-                ->orderBy('sort_order', 'ASC')->findAll();
+        try {
+            $catM = new CategoryModel();
+            $cat  = $catM->findBySlug($slug);
+            if (!$cat || !$cat['is_active']) return $this->notFound('Category not found');
 
-            $categoryIds = [(int) $cat['id']];
-            foreach ($children as $c) $categoryIds[] = (int) $c['id'];
+            $isParent = $cat['parent_id'] === null;
 
-            // Fetch ALL products in newest-first order, then apply absolute-slot positioning,
-            // then slice for pagination.
+            if ($isParent) {
+                $children = $catM->where('parent_id', $cat['id'])->where('is_active', 1)
+                    ->orderBy('sort_order', 'ASC')->findAll();
+
+                $categoryIds = [(int) $cat['id']];
+                foreach ($children as $c) $categoryIds[] = (int) $c['id'];
+
+                // Fetch ALL products in newest-first order, then apply absolute-slot positioning,
+                // then slice for pagination.
+                $pm = new ProductModel();
+                $b  = $pm->whereIn('category_id', $categoryIds)->where('is_active', 1)->orderBy('id', 'DESC');
+                $allProducts   = $b->findAll();
+                $productsTotal = count($allProducts);
+                $ordered       = self::publicRepositionBySlot($allProducts);
+                $products      = array_slice($ordered, $offset, $limit);
+                // Hover-image enrichment so the storefront ProductCard's mouse-enter swap works.
+                $pm->attachHoverImages($products);
+
+                $res = [
+                    'category'       => $this->localize($cat, self::CATEGORY_AR_MAP),
+                    'children'       => $this->localizeMany($children, self::CATEGORY_AR_MAP),
+                    'products'       => $this->localizeMany($products, self::PRODUCT_AR_MAP),
+                    'products_total' => $productsTotal,
+                ];
+
+                try {
+                    cache()->save($cacheKey, $res, 120);
+                } catch (\Throwable $e) {}
+
+                return $this->ok($res);
+            }
+
+            // Child category — fetch all, apply slot positioning, slice for the page.
             $pm = new ProductModel();
-            $b  = $pm->whereIn('category_id', $categoryIds)->where('is_active', 1)->orderBy('id', 'DESC');
-            $allProducts   = $b->findAll();
-            $productsTotal = count($allProducts);
-            $ordered       = self::publicRepositionBySlot($allProducts);
-            $products      = array_slice($ordered, $offset, $limit);
-            // Hover-image enrichment so the storefront ProductCard's mouse-enter swap works.
-            $pm->attachHoverImages($products);
-
-            return $this->ok([
+            $all = $pm->where('category_id', (int) $cat['id'])->where('is_active', 1)
+                ->orderBy('id', 'DESC')->findAll();
+            $total   = count($all);
+            $ordered = self::publicRepositionBySlot($all);
+            $page    = array_slice($ordered, $offset, $limit);
+            $pm->attachHoverImages($page);
+            $res = [
                 'category'       => $this->localize($cat, self::CATEGORY_AR_MAP),
-                'children'       => $this->localizeMany($children, self::CATEGORY_AR_MAP),
-                'products'       => $this->localizeMany($products, self::PRODUCT_AR_MAP),
-                'products_total' => $productsTotal,
-            ]);
-        }
+                'children'       => [],
+                'products'       => $this->localizeMany($page, self::PRODUCT_AR_MAP),
+                'products_total' => $total,
+            ];
 
-        // Child category — fetch all, apply slot positioning, slice for the page.
-        $pm = new ProductModel();
-        $all = $pm->where('category_id', (int) $cat['id'])->where('is_active', 1)
-            ->orderBy('id', 'DESC')->findAll();
-        $total   = count($all);
-        $ordered = self::publicRepositionBySlot($all);
-        $page    = array_slice($ordered, $offset, $limit);
-        $pm->attachHoverImages($page);
-        return $this->ok([
-            'category'       => $this->localize($cat, self::CATEGORY_AR_MAP),
-            'children'       => [],
-            'products'       => $this->localizeMany($page, self::PRODUCT_AR_MAP),
-            'products_total' => $total,
-        ]);
+            try {
+                cache()->save($cacheKey, $res, 120);
+            } catch (\Throwable $e) {}
+
+            return $this->ok($res);
+        } catch (\Throwable $e) {
+            log_message('error', "Categories::show('$slug') failed: " . $e->getMessage());
+            return $this->serverError('Failed to load category: ' . $e->getMessage());
+        }
     }
 
     /**
