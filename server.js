@@ -2,9 +2,10 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
+const net = require('net');
 
 const FRONTEND_PORT = process.env.PORT || 3000;
-const BACKEND_PORT = process.env.API_PORT || 8080;
+let BACKEND_PORT = parseInt(process.env.API_PORT || '8080', 10);
 const ROOT_DIR = __dirname;
 const API_DIR = path.join(ROOT_DIR, 'api');
 
@@ -50,6 +51,7 @@ console.log('[Database] Connected to Hostinger MySQL (srv537.hstgr.io)');
 
 // 1. Start PHP Backend API
 let phpProcess = null;
+let isStartingBackend = false;
 const backendLogs = [];
 
 function logBackend(msg) {
@@ -59,28 +61,73 @@ function logBackend(msg) {
   if (backendLogs.length > 50) backendLogs.shift();
 }
 
-function startBackend() {
-  if (phpProcess && !phpProcess.killed) return;
-
-  // Ensure writable directories exist with full permissions
-  const writableDirs = [
-    path.join(API_DIR, 'writable'),
-    path.join(API_DIR, 'writable', 'cache'),
-    path.join(API_DIR, 'writable', 'logs'),
-    path.join(API_DIR, 'writable', 'session'),
-    path.join(API_DIR, 'writable', 'uploads'),
-    path.join(API_DIR, 'public', 'uploads')
-  ];
-  for (const dir of writableDirs) {
+// Kill any orphaned PHP processes left over from prior deployments
+function killOrphanedPhp() {
+  if (process.platform !== 'win32') {
     try {
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.chmodSync(dir, 0o777);
+      execSync('pkill -9 -f "php -S 127.0.0.1" 2>/dev/null || true');
     } catch {}
+    for (let p = 8080; p <= 8090; p++) {
+      try {
+        execSync(`fuser -k -9 ${p}/tcp 2>/dev/null || true`);
+      } catch {}
+    }
   }
+}
 
-  const phpBin = findPhp();
-  logBackend(`Starting CodeIgniter API using "${phpBin}" on http://127.0.0.1:${BACKEND_PORT}...`);
+// Test whether a specific port is free
+function checkPortAvailable(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, '127.0.0.1');
+  });
+}
+
+// Find an available port starting from startPort
+async function findAvailableBackendPort(startPort = 8080) {
+  killOrphanedPhp();
+  await new Promise(r => setTimeout(r, 200));
+
+  for (let p = startPort; p < startPort + 20; p++) {
+    const isFree = await checkPortAvailable(p);
+    if (isFree) return p;
+  }
+  return startPort;
+}
+
+async function startBackend() {
+  if (phpProcess && !phpProcess.killed) return;
+  if (isStartingBackend) return;
+  isStartingBackend = true;
+
   try {
+    // Ensure writable directories exist with full permissions
+    const writableDirs = [
+      path.join(API_DIR, 'writable'),
+      path.join(API_DIR, 'writable', 'cache'),
+      path.join(API_DIR, 'writable', 'logs'),
+      path.join(API_DIR, 'writable', 'session'),
+      path.join(API_DIR, 'writable', 'uploads'),
+      path.join(API_DIR, 'public', 'uploads')
+    ];
+    for (const dir of writableDirs) {
+      try {
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.chmodSync(dir, 0o777);
+      } catch {}
+    }
+
+    // Automatically find a free port so we never clash with orphaned processes
+    const freePort = await findAvailableBackendPort(BACKEND_PORT);
+    BACKEND_PORT = freePort;
+
+    const phpBin = findPhp();
+    logBackend(`Starting CodeIgniter API using "${phpBin}" on http://127.0.0.1:${BACKEND_PORT}...`);
+
     const isWin = process.platform === 'win32';
     const docroot = path.resolve(API_DIR, 'public');
     const rewriteScript = path.resolve(API_DIR, 'vendor', 'codeigniter4', 'framework', 'system', 'rewrite.php');
@@ -90,6 +137,8 @@ function startBackend() {
     const args = fs.existsSync(rewriteScript)
       ? ['-S', `127.0.0.1:${BACKEND_PORT}`, '-t', docroot, rewriteScript]
       : ['spark', 'serve', '--host', '127.0.0.1', '--port', String(BACKEND_PORT)];
+
+    let lastErrorOutput = '';
 
     phpProcess = spawn(phpBin, args, {
       cwd: API_DIR,
@@ -106,7 +155,9 @@ function startBackend() {
 
     if (phpProcess.stderr) {
       phpProcess.stderr.on('data', (d) => {
-        const lines = d.toString().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        const text = d.toString();
+        lastErrorOutput += text;
+        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
         lines.forEach(line => logBackend(`[STDERR] ${line}`));
       });
     }
@@ -115,12 +166,21 @@ function startBackend() {
       logBackend(`[ERROR] Failed to start PHP server: ${err.message}`);
     });
 
-    phpProcess.on('exit', (code, signal) => {
+    phpProcess.on('exit', async (code, signal) => {
       logBackend(`[EXIT] PHP server exited with code ${code}, signal ${signal}`);
       phpProcess = null;
+
+      // Auto-retry on next port if address already in use
+      if (lastErrorOutput.includes('Address already in use')) {
+        logBackend(`Port ${BACKEND_PORT} already in use. Retrying on next port...`);
+        BACKEND_PORT++;
+        setTimeout(() => startBackend(), 500);
+      }
     });
   } catch (err) {
     logBackend(`[EXCEPTION] ${err.message}`);
+  } finally {
+    isStartingBackend = false;
   }
 }
 
@@ -157,29 +217,29 @@ function serveFrontend() {
       filePath = path.join(API_DIR, 'public', safePath);
     } else if (reqUrl.startsWith('/api/uploads/')) {
       filePath = path.join(API_DIR, 'public', safePath.replace(/^[\\\/]api[\\\/]/, '/'));
+    } else if (reqUrl === '/api/restart-backend') {
+      logBackend('[MANUAL] Remote restart requested via /api/restart-backend');
+      if (phpProcess) {
+        try { phpProcess.kill('SIGKILL'); } catch {}
+        phpProcess = null;
+      }
+      killOrphanedPhp();
+      startBackend().then(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success: true,
+          message: 'Backend restarted',
+          backendPort: BACKEND_PORT,
+          logs: backendLogs.slice(-20)
+        }, null, 2));
+      });
+      return;
     } else if (reqUrl === '/api/diagnostic' || reqUrl === '/api/diagnostic/') {
       let phpVersion = 'unknown';
       try {
         phpVersion = execSync(`${findPhp()} -v`, { timeout: 3000 }).toString().trim();
       } catch (e) {
         phpVersion = 'Error: ' + e.message;
-      }
-
-      let sparkStatus = 'unknown';
-      try {
-        sparkStatus = execSync(`${findPhp()} spark -V`, { cwd: API_DIR, timeout: 3000 }).toString().trim();
-      } catch (e) {
-        sparkStatus = 'Error: ' + ((e.stderr && e.stderr.toString()) || (e.stdout && e.stdout.toString()) || e.message);
-      }
-
-      let dbTest = 'unknown';
-      try {
-        dbTest = execSync(`${findPhp()} -r "require 'vendor/autoload.php'; define('APPPATH', __DIR__ . '/app/'); define('SYSTEMPATH', __DIR__ . '/vendor/codeigniter4/framework/system/'); define('ENVIRONMENT', 'production'); require 'vendor/codeigniter4/framework/system/Common.php'; require 'app/Common.php'; (new \CodeIgniter\Config\DotEnv(__DIR__))->load(); try { \\$db = \\Config\\Database::connect(); \\$row = \\$db->query('SELECT 1')->getRow(); echo \\$row ? 'DB_CONNECTED_SUCCESS' : 'DB_NO_ROW'; } catch (\\Throwable \\$e) { echo 'DB_EXCEPTION: ' . \\$e->getMessage(); }"`, {
-          cwd: API_DIR,
-          timeout: 5000
-        }).toString().trim();
-      } catch (e) {
-        dbTest = 'Error: ' + ((e.stderr && e.stderr.toString()) || (e.stdout && e.stdout.toString()) || e.message);
       }
 
       let ciLogs = [];
@@ -196,24 +256,50 @@ function serveFrontend() {
         ciLogs = ['Log error: ' + logErr.message];
       }
 
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        status: phpProcess ? 'running' : 'offline',
-        nodeVersion: process.version,
-        platform: process.platform,
-        pid: process.pid,
-        cwd: ROOT_DIR,
-        apiDirExists: fs.existsSync(API_DIR),
-        sparkExists: fs.existsSync(path.join(API_DIR, 'spark')),
-        detectedPhp: findPhp(),
-        phpVersion,
-        sparkStatus,
-        dbTest,
-        ciLogs,
-        backendPort: BACKEND_PORT,
-        frontendPort: FRONTEND_PORT,
-        backendLogs
-      }, null, 2));
+      // Self-test: make an HTTP request to local PHP server
+      const testReq = http.get(`http://127.0.0.1:${BACKEND_PORT}/api/settings/public`, { timeout: 4000 }, (testRes) => {
+        let rawData = '';
+        testRes.on('data', chunk => rawData += chunk);
+        testRes.on('end', () => {
+          let parsedData = null;
+          try { parsedData = JSON.parse(rawData); } catch {}
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            status: phpProcess ? 'running' : 'offline',
+            nodeVersion: process.version,
+            platform: process.platform,
+            pid: process.pid,
+            backendPort: BACKEND_PORT,
+            frontendPort: FRONTEND_PORT,
+            phpVersion,
+            selfTest: {
+              statusCode: testRes.statusCode,
+              success: parsedData ? parsedData.success : false,
+              storeName: (parsedData && parsedData.data && parsedData.data.store_name) || null
+            },
+            ciLogs,
+            backendLogs
+          }, null, 2));
+        });
+      });
+
+      testReq.on('error', (e) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          status: phpProcess ? 'running' : 'offline',
+          nodeVersion: process.version,
+          platform: process.platform,
+          pid: process.pid,
+          backendPort: BACKEND_PORT,
+          frontendPort: FRONTEND_PORT,
+          phpVersion,
+          selfTest: {
+            error: e.message
+          },
+          ciLogs,
+          backendLogs
+        }, null, 2));
+      });
       return;
     } else if (req.url.startsWith('/api/') || req.url === '/api') {
       if (!phpProcess) {
@@ -225,7 +311,13 @@ function serveFrontend() {
         port: BACKEND_PORT,
         path: req.url,
         method: req.method,
-        headers: { ...req.headers, host: `127.0.0.1:${BACKEND_PORT}` }
+        headers: {
+          ...req.headers,
+          host: `127.0.0.1:${BACKEND_PORT}`,
+          'x-forwarded-host': req.headers['host'] || 'marooffc.com',
+          'x-forwarded-proto': req.headers['x-forwarded-proto'] || 'https',
+          'x-forwarded-for': req.headers['x-forwarded-for'] || req.socket.remoteAddress
+        }
       }, (proxyRes) => {
         res.writeHead(proxyRes.statusCode, proxyRes.headers);
         proxyRes.pipe(res, { end: true });
@@ -238,6 +330,7 @@ function serveFrontend() {
           error: {
             message: 'Backend API offline',
             detail: err.message,
+            backendPort: BACKEND_PORT,
             backendLogs: backendLogs.slice(-10)
           }
         }));
@@ -317,10 +410,12 @@ function serveFrontend() {
     console.log('----------------------------------------------------');
     console.log('Press Ctrl + C to stop all servers.\n');
 
-    // Automatically open browser
-    try {
-      execSync(`start http://localhost:${FRONTEND_PORT}`);
-    } catch {}
+    // Automatically open browser on Windows local dev
+    if (process.platform === 'win32') {
+      try {
+        execSync(`start http://localhost:${FRONTEND_PORT}`);
+      } catch {}
+    }
   });
 }
 
@@ -331,9 +426,10 @@ function shutdown() {
     try {
       process.platform === 'win32'
         ? execSync(`taskkill /pid ${phpProcess.pid} /T /F`, { stdio: 'ignore' })
-        : phpProcess.kill();
+        : phpProcess.kill('SIGKILL');
     } catch {}
   }
+  killOrphanedPhp();
   process.exit(0);
 }
 
