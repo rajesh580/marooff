@@ -665,7 +665,16 @@ function serveFrontend() {
         'Content-Type': contentType,
         'Access-Control-Allow-Origin': '*'
       });
-      res.end(data);
+      if (ext === '.html') {
+        let htmlStr = data.toString('utf8');
+        const inject = "<script>if('scrollRestoration' in history)history.scrollRestoration='manual';window.scrollTo(0,0);</script>";
+        if (!htmlStr.includes("history.scrollRestoration='manual'")) {
+          htmlStr = htmlStr.replace('<head>', '<head>' + inject);
+        }
+        res.end(htmlStr);
+      } else {
+        res.end(data);
+      }
     });
   });
 
