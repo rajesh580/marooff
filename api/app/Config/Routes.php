@@ -93,6 +93,8 @@ $registerAllRoutes = static function (string $basePrefix, RouteCollection $route
     // ============================================================
     $routes->group($prefix . 'admin', ['namespace' => 'App\Controllers\Admin', 'filter' => 'adminAuth'], static function ($routes) {
         $routes->get('me',                                   'AdminAuth::me');
+        $routes->put('change-password',                      'AdminAuth::changePassword');
+        $routes->post('change-password',                     'AdminAuth::changePassword');
 
         $routes->get('categories',                           'Categories::index');
         $routes->post('categories',                          'Categories::create');
@@ -177,6 +179,8 @@ $registerAllRoutes = static function (string $basePrefix, RouteCollection $route
     // ============================================================
     $routes->group($prefix . 'sales', ['namespace' => 'App\Controllers\Admin', 'filter' => 'salesAuth'], static function ($routes) {
         $routes->get('me',                       'AdminAuth::me');
+        $routes->put('change-password',          'AdminAuth::changePassword');
+        $routes->post('change-password',         'AdminAuth::changePassword');
 
         // Dashboard / Sales analytics
         $routes->get('sales/summary',            'Sales::summary');

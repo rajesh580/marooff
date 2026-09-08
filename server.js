@@ -56,11 +56,9 @@ let isShuttingDown = false;
 let backendReadyPromise = null;
 const backendLogs = [];
 
-// Persistent HTTP Keep-Alive Agent for PHP backend requests
+// HTTP Agent for PHP backend requests (keepAlive disabled on Windows to prevent single-thread worker starvation)
 const backendAgent = new http.Agent({
-  keepAlive: true,
-  keepAliveMsecs: 30000,
-  maxSockets: 64,
+  keepAlive: false,
   timeout: 15000
 });
 
@@ -261,10 +259,9 @@ async function spawnPhpProcess() {
 async function ensureBackendReady(maxWaitMs = 10000) {
   if (isShuttingDown) throw new Error('Server shutting down');
 
-  // If already running and responsive, return immediately
+  // If already running, return immediately
   if (phpProcess && !phpProcess.killed) {
-    const alive = await pingBackend(BACKEND_PORT, 800);
-    if (alive) return BACKEND_PORT;
+    return BACKEND_PORT;
   }
 
   // If already in the middle of starting, wait for the pending promise
@@ -450,10 +447,21 @@ function serveFrontend() {
         flushApiCache(`mutation: ${req.method} ${req.url}`);
       }
 
-      let clientClosed = false;
-      req.on('close', () => {
-        clientClosed = true;
+      let clientAborted = false;
+      res.on('close', () => {
+        if (!res.writableEnded) clientAborted = true;
       });
+
+      // Synchronously capture incoming body stream for POST/PUT/PATCH to prevent stream starvation
+      const reqBodyChunks = [];
+      let reqBodyReady = Promise.resolve(null);
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        reqBodyReady = new Promise((resolve) => {
+          req.on('data', chunk => reqBodyChunks.push(chunk));
+          req.on('end', () => resolve(Buffer.concat(reqBodyChunks)));
+          req.on('error', () => resolve(Buffer.concat(reqBodyChunks)));
+        });
+      }
 
       const cacheKey = req.url;
       const canCache = isCacheableApiRequest(req.method, req.url, req.headers);
@@ -493,7 +501,7 @@ function serveFrontend() {
 
       // 3. Robust Proxy Execution with Keep-Alive Agent & Auto-Retry
       async function executeProxy(retryCount = 0) {
-        if (clientClosed && !canCache) return;
+        if (clientAborted && !canCache) return;
 
         let inFlightResolver = null;
         let inFlightRejecter = null;
@@ -506,6 +514,7 @@ function serveFrontend() {
         }
 
         try {
+          const reqBody = await reqBodyReady;
           await ensureBackendReady();
 
           const proxyReq = http.request({
@@ -517,6 +526,7 @@ function serveFrontend() {
             headers: {
               ...req.headers,
               host: `127.0.0.1:${BACKEND_PORT}`,
+              'connection': 'close',
               'x-forwarded-host': req.headers['host'] || 'marooffc.com',
               'x-forwarded-proto': req.headers['x-forwarded-proto'] || 'https',
               'x-forwarded-for': req.headers['x-forwarded-for'] || (req.socket && req.socket.remoteAddress) || '127.0.0.1'
@@ -548,7 +558,7 @@ function serveFrontend() {
               if (inFlightResolver) inFlightResolver(result);
               inFlightRequests.delete(cacheKey);
 
-              if (!clientClosed && !res.writableEnded) {
+              if (!clientAborted && !res.writableEnded && !res.destroyed) {
                 const headers = cleanResponseHeaders(proxyRes.headers, body.length);
                 res.writeHead(proxyRes.statusCode, {
                   ...headers,
@@ -569,7 +579,7 @@ function serveFrontend() {
               return executeProxy(retryCount + 1);
             }
 
-            if (!clientClosed && !res.writableEnded) {
+            if (!clientAborted && !res.writableEnded && !res.destroyed) {
               res.writeHead(502, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({
                 success: false,
@@ -583,16 +593,16 @@ function serveFrontend() {
             }
           });
 
-          if (req.method === 'GET' || req.method === 'HEAD') {
+          if (req.method === 'GET' || req.method === 'HEAD' || !reqBody) {
             proxyReq.end();
           } else {
-            req.pipe(proxyReq, { end: true });
+            proxyReq.end(reqBody);
           }
         } catch (err) {
           if (inFlightRejecter) inFlightRejecter(err);
           inFlightRequests.delete(cacheKey);
 
-          if (!clientClosed && !res.writableEnded) {
+          if (!clientAborted && !res.writableEnded && !res.destroyed) {
             res.writeHead(502, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
               success: false,
