@@ -519,7 +519,7 @@ function serveFrontend() {
               host: `127.0.0.1:${BACKEND_PORT}`,
               'x-forwarded-host': req.headers['host'] || 'marooffc.com',
               'x-forwarded-proto': req.headers['x-forwarded-proto'] || 'https',
-              'x-forwarded-for': req.headers['x-forwarded-for'] || req.socket.remoteAddress
+              'x-forwarded-for': req.headers['x-forwarded-for'] || (req.socket && req.socket.remoteAddress) || '127.0.0.1'
             }
           }, (proxyRes) => {
             const chunks = [];
