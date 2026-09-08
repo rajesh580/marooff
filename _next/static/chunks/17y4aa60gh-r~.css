@@ -13,6 +13,11 @@ html, body {
   overflow-x: hidden !important;
   -webkit-text-size-adjust: 100% !important;
   overscroll-behavior-y: none;
+  overflow-anchor: none !important;
+}
+
+* {
+  overflow-anchor: none !important;
 }
 
 *, ::before, ::after {
